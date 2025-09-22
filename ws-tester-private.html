@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Private Message Sender (EC2)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #111;
+        color: #eee;
+        padding: 20px;
+      }
+      .card {
+        background: #1b1b1b;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+      }
+      input,
+      textarea,
+      button {
+        width: 100%;
+        padding: 8px;
+        margin-top: 4px;
+        background: #222;
+        border: 1px solid #333;
+        border-radius: 5px;
+        color: #fff;
+      }
+      textarea.log {
+        height: 200px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>💬 Private Message Sender</h1>
+
+    <div class="card">
+      <label>From (username)</label>
+      <input id="from" placeholder="admin veya kullanıcı adı" />
+
+      <label>To (username)</label>
+      <input id="to" placeholder="alıcı kullanıcı adı" />
+
+      <label>Body</label>
+      <textarea id="body" rows="3" placeholder="Mesaj içeriği"></textarea>
+
+      <div style="margin-top: 10px">
+        <button id="connectBtn">Connect & Subscribe</button>
+        <button id="sendBtn" disabled>Send Private Message</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Logs</label>
+      <textarea id="logs" class="log" readonly></textarea>
+    </div>
+
+    <script>
+      const DOMAIN =
+        "ec2-52-59-117-254.eu-central-1.compute.amazonaws.com:8888";
+      const SOCKET_URL = `http://${DOMAIN}/chat`;
+      const PRIVATE_SEND = "/app/chat";
+
+      let stompClient = null;
+      let username = "";
+
+      const fromEl = document.getElementById("from");
+      const toEl = document.getElementById("to");
+      const bodyEl = document.getElementById("body");
+      const logsEl = document.getElementById("logs");
+      const connectBtn = document.getElementById("connectBtn");
+      const sendBtn = document.getElementById("sendBtn");
+
+      function log(msg) {
+        logsEl.value += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+
+      connectBtn.onclick = () => {
+        username = fromEl.value.trim();
+        if (!username) return alert("From (username) boş olamaz!");
+
+        const socket = new SockJS(SOCKET_URL);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = () => {};
+
+        stompClient.connect(
+          {},
+          () => {
+            log("✅ Connected as " + username);
+
+            // Private mesaj aboneliği
+            stompClient.subscribe(
+              `/user/${username}/queue/private`,
+              (response) => {
+                const message = JSON.parse(response.body);
+                log(`📩 From ${message.from}: ${message.text}`);
+              }
+            );
+
+            sendBtn.disabled = false;
+          },
+          (err) => {
+            log("❌ Connection error: " + err);
+          }
+        );
+      };
+
+      sendBtn.onclick = () => {
+        const from = fromEl.value.trim();
+        const to = toEl.value.trim();
+        const text = bodyEl.value.trim();
+        if (!from || !to || !text)
+          return alert("From, To ve Body doldurulmalı!");
+
+        const message = { from, to, text };
+        stompClient.send(PRIVATE_SEND, {}, JSON.stringify(message));
+        log(`📤 To ${to}: ${text}`);
+        bodyEl.value = "";
+      };
+    </script>
+  </body>
+</html>

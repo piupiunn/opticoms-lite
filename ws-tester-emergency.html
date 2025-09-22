@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Emergency Sender (EC2)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #111;
+        color: #eee;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      .card {
+        background: #1b1b1b;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+      }
+      label {
+        display: block;
+        margin-top: 10px;
+        font-size: 13px;
+      }
+      input,
+      textarea,
+      button {
+        width: 100%;
+        padding: 8px;
+        margin-top: 4px;
+        background: #222;
+        border: 1px solid #333;
+        border-radius: 5px;
+        color: #fff;
+      }
+      button {
+        cursor: pointer;
+      }
+      textarea.log {
+        height: 200px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🚨 Emergency Sender</h1>
+
+    <div class="card">
+      <div>
+        <label>From (username)</label>
+        <input id="from" placeholder="alice" />
+      </div>
+      <div>
+        <label>Body</label>
+        <textarea
+          id="body"
+          rows="3"
+          placeholder="Acil durum! Yardım lazım."
+        ></textarea>
+      </div>
+      <div style="margin-top: 10px">
+        <button id="connectBtn">Connect & Subscribe</button>
+        <button id="sendBtn" disabled>Send Emergency</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Logs</label>
+      <textarea id="logs" class="log" readonly></textarea>
+    </div>
+
+    <script>
+      const DOMAIN =
+        "ec2-52-59-117-254.eu-central-1.compute.amazonaws.com:8888";
+      const SOCKET_URL = `http://${DOMAIN}/chat`; // SockJS endpoint
+      const EMERGENCY_TOPIC = "/topic/emergency";
+      const EMERGENCY_SEND = "/app/emergency";
+
+      let stompClient = null;
+
+      const fromEl = document.getElementById("from");
+      const bodyEl = document.getElementById("body");
+      const connectBtn = document.getElementById("connectBtn");
+      const sendBtn = document.getElementById("sendBtn");
+      const logsEl = document.getElementById("logs");
+
+      function log(msg) {
+        logsEl.value += `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+        logsEl.scrollTop = logsEl.scrollHeight;
+      }
+
+      connectBtn.onclick = () => {
+        const socket = new SockJS(SOCKET_URL);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = () => {};
+        stompClient.connect(
+          {},
+          () => {
+            log("Connected to " + SOCKET_URL);
+            stompClient.subscribe(EMERGENCY_TOPIC, (msg) => {
+              log("Received: " + msg.body);
+            });
+            log("Subscribed to " + EMERGENCY_TOPIC);
+            sendBtn.disabled = false;
+          },
+          (err) => log("Connection error: " + err)
+        );
+      };
+
+      sendBtn.onclick = () => {
+        const from = fromEl.value.trim();
+        const body = bodyEl.value.trim();
+        if (!from || !body) return alert("From ve Body doldurulmalı!");
+        const payload = { from, text: body }; // 'body' inputun içerğini 'text'e koy
+        stompClient.send("/app/emergency", {}, JSON.stringify(payload));
+        log("Sent emergency: " + JSON.stringify(payload));
+      };
+    </script>
+  </body>
+</html>

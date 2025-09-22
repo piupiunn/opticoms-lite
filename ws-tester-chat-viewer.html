@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chat Viewer (only admin↔user + broadcast)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --card: #161a22;
+        --muted: #94a3b8;
+        --text: #e2e8f0;
+        --border: #263041;
+        --tag-em: #7f1d1d;
+        --tag-pr: #15803d;
+        --tag-bc: #1d4ed8;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      input,
+      button {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #101623;
+        color: var(--text);
+      }
+      button {
+        cursor: pointer;
+      }
+      .status {
+        font-size: 12px;
+        margin-left: auto;
+      }
+      .ok {
+        color: #22c55e;
+      }
+      .bad {
+        color: #ef4444;
+      }
+      #chat {
+        height: 60vh;
+        overflow: auto;
+        background: #0b1018;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+        padding: 10px;
+      }
+      .item {
+        margin: 8px 0;
+      }
+      .meta {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      .bubble {
+        display: inline-block;
+        max-width: 70%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #111827;
+        border: 1px solid var(--border);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .right {
+        text-align: right;
+      }
+      .right .bubble {
+        background: #0f172a;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        margin-right: 6px;
+        border: 1px solid;
+        vertical-align: 1px;
+      }
+      .em {
+        color: #fecaca;
+        border-color: var(--tag-em);
+        background: #2a1214;
+      }
+      .pr {
+        color: #bbf7d0;
+        border-color: var(--tag-pr);
+        background: #0f2e1b;
+      }
+      .bc {
+        color: #bfdbfe;
+        border-color: var(--tag-bc);
+        background: #0f1b2e;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <strong>👀 Only View:</strong>
+      <label>Username</label>
+      <input
+        id="username"
+        placeholder="jane-doe-..."
+        style="min-width: 320px"
+      />
+      <label>To</label>
+      <input value="admin" disabled style="width: 140px; opacity: 0.7" />
+      <button id="connectBtn">Connect</button>
+      <button id="historyBtn">Load Last 7 Days</button>
+      <div id="status" class="status bad">🔴 Not Connected</div>
+    </div>
+
+    <div class="card">
+      <div id="chat"></div>
+      <div class="hint">
+        Gösterim filtresi: <b>admin ↔ (girdiğin kullanıcı)</b> ve
+        <b>broadcast</b>.
+      </div>
+    </div>
+
+    <script>
+      // ==== CONFIG ====
+      const DOMAIN =
+        "ec2-52-59-117-254.eu-central-1.compute.amazonaws.com:8888";
+      const SOCKET_URL = `http://${DOMAIN}/chat`;
+      const HISTORY_URL = `http://${DOMAIN}/v1/messageHistory/find_messages`;
+      const ADMIN = "admin";
+
+      // topics/queues (sunucundaki pattern’lere göre)
+      const TOPIC_BROADCAST = "/topic/broadcast";
+      const QUEUE_PRIVATE = (u) => `/user/${u}/queue/private`;
+      const QUEUE_EMERGENCY = (u) => `/user/${u}/queue/emergency`;
+
+      // ==== DOM ====
+      const usernameEl = document.getElementById("username");
+      const connectBtn = document.getElementById("connectBtn");
+      const historyBtn = document.getElementById("historyBtn");
+      const statusEl = document.getElementById("status");
+      const chatEl = document.getElementById("chat");
+
+      let stomp = null,
+        me = null;
+
+      // ui helpers
+      function setStatus(ok) {
+        statusEl.textContent = ok ? "🟢 Connected" : "🔴 Not Connected";
+        statusEl.className = "status " + (ok ? "ok" : "bad");
+      }
+      function clearChat() {
+        chatEl.innerHTML = "";
+      }
+      function addMsg({ from, to, body, text, type, created }, side = "left") {
+        const content = body ?? text ?? "";
+        const ts = created ? new Date(created) : new Date();
+        const wrap = document.createElement("div");
+        wrap.className = "item " + (side === "right" ? "right" : "left");
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const tag = document.createElement("span");
+        tag.className =
+          "tag " +
+          (type === "EMERGENCY" ? "em" : type === "BROADCAST" ? "bc" : "pr");
+        tag.textContent = type || (to ? "PRIVATE" : "BROADCAST");
+        meta.appendChild(tag);
+        meta.append(`${ts.toLocaleString()} — ${from || "?"} → ${to || "-"}`);
+
+        const bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = content;
+
+        wrap.appendChild(meta);
+        wrap.appendChild(bubble);
+        chatEl.appendChild(wrap);
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      // mesaj filtre: sadece admin↔me VEYA broadcast
+      function passFilter(m) {
+        const f = (m.from || "").toLowerCase();
+        const t = (m.to || "").toLowerCase();
+        const isAdminMe =
+          (f === ADMIN && t === me) || (f === me && t === ADMIN);
+        const isBroadcast = (m.type || "").toUpperCase() === "BROADCAST";
+        return isAdminMe || isBroadcast;
+      }
+
+      // LIVE: connect & subscribe
+      connectBtn.onclick = () => {
+        me = usernameEl.value.trim();
+        if (!me) return alert("Username giriniz.");
+        const sock = new SockJS(SOCKET_URL);
+        stomp = Stomp.over(sock);
+        stomp.debug = () => {};
+        stomp.connect(
+          {},
+          () => {
+            setStatus(true);
+
+            // broadcast
+            stomp.subscribe(TOPIC_BROADCAST, (frame) => {
+              try {
+                const msg = JSON.parse(frame.body);
+                if (!passFilter({ ...msg, type: "BROADCAST" })) return;
+                addMsg({ ...msg, type: "BROADCAST" }, "left");
+              } catch {}
+            });
+
+            // private to me
+            stomp.subscribe(QUEUE_PRIVATE(me), (frame) => {
+              try {
+                const msg = JSON.parse(frame.body); // {from,to,text,type?}
+                if (!passFilter(msg)) return;
+                const side = msg.from === me ? "right" : "left";
+                addMsg(msg, side);
+              } catch {}
+            });
+
+            // emergency to me
+            stomp.subscribe(QUEUE_EMERGENCY(me), (frame) => {
+              try {
+                const msg = JSON.parse(frame.body);
+                msg.type = "EMERGENCY";
+                if (!passFilter(msg)) return;
+                const side = msg.from === me ? "right" : "left";
+                addMsg(msg, side);
+              } catch {}
+            });
+          },
+          () => setStatus(false)
+        );
+      };
+
+      // HISTORY: son 7 gün (admin↔me + broadcast)
+      historyBtn.onclick = async () => {
+        me = usernameEl.value.trim();
+        if (!me) return alert("Username giriniz.");
+        clearChat();
+
+        const now = Date.now();
+        const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+        const q = (o) => new URLSearchParams(o).toString();
+
+        // 1) me → admin
+        const u1 = `${HISTORY_URL}?${q({
+          from: me,
+          to: ADMIN,
+          createdAfter: weekAgo,
+          createdBefore: now,
+        })}`;
+        // 2) admin → me
+        const u2 = `${HISTORY_URL}?${q({
+          from: ADMIN,
+          to: me,
+          createdAfter: weekAgo,
+          createdBefore: now,
+        })}`;
+        // 3) broadcast (admin’dan herkese)
+        const u3 = `${HISTORY_URL}?${q({
+          from: ADMIN,
+          createdAfter: weekAgo,
+          createdBefore: now,
+        })}`;
+
+        async function safe(url) {
+          try {
+            const r = await fetch(url);
+            if (!r.ok) throw 0;
+            return (await r.json()).content || [];
+          } catch {
+            return [];
+          }
+        }
+
+        const [a, b, c] = await Promise.all([safe(u1), safe(u2), safe(u3)]);
+        const uniq = new Map();
+        [...a, ...b, ...c].forEach((m) => {
+          if (passFilter(m) && !uniq.has(m.id)) uniq.set(m.id, m);
+        });
+        const all = Array.from(uniq.values()).sort(
+          (x, y) => (x.created || 0) - (y.created || 0)
+        );
+
+        all.forEach((m) => {
+          const side =
+            m.from === me
+              ? "right"
+              : m.type === "BROADCAST"
+              ? "left"
+              : m.to === me
+              ? "left"
+              : "right";
+          addMsg(m, side);
+        });
+      };
+    </script>
+  </body>
+</html>

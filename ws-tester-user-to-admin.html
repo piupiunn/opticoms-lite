@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>User Chat with Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #111;
+        color: #eee;
+        margin: 0;
+        padding: 20px;
+      }
+      .wrap {
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        margin-top: 10px;
+      }
+      input,
+      textarea,
+      button {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #333;
+        border-radius: 6px;
+        background: #1c1c1c;
+        color: #fff;
+      }
+      button {
+        cursor: pointer;
+      }
+      .chat {
+        height: 380px;
+        overflow: auto;
+        background: #151515;
+        border: 1px solid #2a2a2a;
+        border-radius: 8px;
+        padding: 10px;
+        margin-top: 10px;
+      }
+      .msg {
+        max-width: 80%;
+        margin: 6px 0;
+        padding: 8px 10px;
+        border-radius: 10px;
+        line-height: 1.3;
+      }
+      .left {
+        background: #222;
+      }
+      .right {
+        background: #0e3;
+        color: #021;
+        margin-left: auto;
+      }
+      .emerg {
+        background: #b00;
+        color: #fff;
+      }
+      .meta {
+        font-size: 12px;
+        opacity: 0.7;
+        margin-bottom: 4px;
+      }
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <h1>👤 Kullanıcı Sohbeti (Admin ile)</h1>
+        <div id="conn">🔴 Not Connected</div>
+      </div>
+
+      <!-- Kimlik -->
+      <div class="row">
+        <div style="flex: 1">
+          <label>Kullanıcı (from)</label>
+          <input id="me" placeholder="your-username" />
+        </div>
+        <div style="flex: 1">
+          <label>To (sabit)</label>
+          <input id="to" value="admin" disabled />
+        </div>
+      </div>
+
+      <!-- Chat alanı -->
+      <div id="chat" class="chat"></div>
+
+      <!-- Özel mesaj gönder -->
+      <div class="row">
+        <input id="text" placeholder="Admin'e özel mesaj yaz..." />
+        <button id="send">Gönder (Private)</button>
+      </div>
+
+      <!-- Emergency gönder -->
+      <div class="row">
+        <textarea
+          id="eBody"
+          rows="2"
+          placeholder="Emergency metni..."
+        ></textarea>
+        <button id="sendEmerg">🚨 Emergency Gönder</button>
+      </div>
+
+      <!-- Geçmişi elle yenile (debug) -->
+      <div class="row">
+        <button id="load">Son 7 günü yükle</button>
+      </div>
+    </div>
+
+    <script>
+      // === Sabitler ===
+      const DOMAIN =
+        "ec2-52-59-117-254.eu-central-1.compute.amazonaws.com:8888";
+      const SOCKET_URL = `http://${DOMAIN}/chat`;
+      const HISTORY_URL = `http://${DOMAIN}/v1/messageHistory/find_messages`;
+      // ec2'da test için kullanıcı ismi: jane-doe-0b6fdd0f-d0c6-4044-97cf-d89b3aec75c5 olmalı
+      // local makinede test için kullanıcı ismi: caner-a1d902de-002d-4118-bdd0-35843fd657ea olmalı
+
+      // === Durum ===
+      let stompClient = null;
+      const subs = { private: null };
+      const msgs = [];
+      const seen = new Set();
+
+      // === Elemanlar ===
+      const meEl = document.getElementById("me");
+      const toEl = document.getElementById("to");
+      const chatEl = document.getElementById("chat");
+      const textEl = document.getElementById("text");
+      const eBodyEl = document.getElementById("eBody");
+      const connEl = document.getElementById("conn");
+
+      // admin sabit
+      document.addEventListener("DOMContentLoaded", () => {
+        toEl.value = "admin";
+        toEl.disabled = true;
+      });
+
+      // Yardımcılar
+      const setConn = (ok) => {
+        connEl.textContent = ok ? "🟢 Connected" : "🔴 Not Connected";
+        connEl.style.color = ok ? "lime" : "red";
+      };
+      const debounce = (fn, ms = 300) => {
+        let t;
+        return (...a) => {
+          clearTimeout(t);
+          t = setTimeout(() => fn(...a), ms);
+        };
+      };
+
+      // Tek giriş noktası: canlı/history ham payload'ını ekle
+      function onMessage({ type, from, to, body, created, id }) {
+        const me = meEl.value.trim();
+        // id/created yoksa üret
+        if (!created) created = Date.now();
+        if (!id)
+          id = `${from || ""}|${to || ""}|${type}|${created}|${body || ""}`;
+
+        if (seen.has(id)) return;
+        seen.add(id);
+        msgs.push({ id, type, from, to, body: body || "", created });
+        msgs.sort((a, b) => a.created - b.created);
+        render();
+      }
+
+      // === Bağlan ===
+      function connect() {
+        const socket = new SockJS(SOCKET_URL);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = () => {};
+
+        stompClient.connect(
+          {},
+          () => {
+            setConn(true);
+
+            // Broadcast (canlı) — canlı payload
+            stompClient.subscribe("/topic/broadcast", (res) => {
+              const raw = JSON.parse(res.body);
+              onMessage({
+                type: "BROADCAST",
+                from: raw.from,
+                to: raw.to,
+                body: raw.text,
+                created: Date.now(),
+                id: raw.id,
+              });
+            });
+
+            // Private (admin -> user) — user queue
+            subscribeUserPrivate();
+
+            const resub = debounce(subscribeUserPrivate, 300);
+            meEl.addEventListener("input", resub);
+            meEl.addEventListener("change", subscribeUserPrivate);
+          },
+          () => {
+            setConn(false);
+            setTimeout(connect, 3000);
+          }
+        );
+
+        socket.onclose = () => {
+          setConn(false);
+          setTimeout(connect, 3000);
+        };
+      }
+
+      // === Kullanıcı private kuyruğu ===
+      function subscribeUserPrivate() {
+        const me = meEl.value.trim();
+        if (!stompClient || !me) return;
+
+        subs.private?.unsubscribe();
+
+        subs.private = stompClient.subscribe(
+          `/user/${me}/queue/private`,
+          (res) => {
+            const raw = JSON.parse(res.body);
+            onMessage({
+              type: "PRIVATE",
+              from: raw.from,
+              to: raw.to || me,
+              body: raw.text,
+              created: Date.now(),
+              id: raw.id,
+            });
+          }
+        );
+      }
+
+      // === Render ===
+      function render() {
+        chatEl.innerHTML = "";
+        const me = meEl.value.trim();
+        const admin = toEl.value.trim();
+
+        for (const m of msgs) {
+          const show =
+            m.type === "BROADCAST" ||
+            (me &&
+              ((m.type === "PRIVATE" &&
+                ((m.from === me && m.to === admin) ||
+                  (m.from === admin && m.to === me))) ||
+                (m.type === "EMERGENCY" && m.from === me)));
+
+          if (!show) continue;
+
+          const mine = m.from === me;
+          const div = document.createElement("div");
+
+          if (m.type === "EMERGENCY") {
+            // emergency her zaman sağda
+            div.className = "msg emerg right";
+          } else {
+            div.className = `msg ${mine ? "right" : "left"}`;
+          }
+
+          div.innerHTML = `
+        <div class="meta">${m.type}${
+            m.type === "BROADCAST" ? "" : " • " + (m.from ?? "")
+          }</div>
+        <div>${m.body ?? ""}</div>
+      `;
+          chatEl.appendChild(div);
+        }
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      // === Geçmiş ===
+      async function loadHistory(me) {
+        if (!me) {
+          alert("Önce kullanıcı adını (from) gir.");
+          return;
+        }
+
+        const admin = toEl.value.trim();
+        const today = new Date();
+        const lastWeek = new Date();
+        lastWeek.setDate(today.getDate() - 7);
+
+        const qs = (o) => new URLSearchParams(o).toString();
+        const urls = [
+          // from = me
+          `${HISTORY_URL}?${qs({
+            from: me,
+            createdBefore: String(today.getTime()),
+            createdAfter: String(lastWeek.getTime()),
+          })}`,
+          // to = me
+          `${HISTORY_URL}?${qs({
+            to: me,
+            createdBefore: String(today.getTime()),
+            createdAfter: String(lastWeek.getTime()),
+          })}`,
+          // broadcast (admindengelenler)
+          `${HISTORY_URL}?${qs({
+            from: "admin",
+            createdBefore: String(today.getTime()),
+            createdAfter: String(lastWeek.getTime()),
+          })}`,
+          // emergency (sadece user -> admin, type filtresi YOK)
+          `${HISTORY_URL}?${qs({
+            from: me,
+            to: "admin",
+            createdBefore: String(today.getTime()),
+            createdAfter: String(lastWeek.getTime()),
+          })}`,
+        ];
+
+        const safe = async (u) => {
+          try {
+            const r = await fetch(u);
+            if (!r.ok) throw 0;
+            return (await r.json()).content || [];
+          } catch {
+            return [];
+          }
+        };
+
+        const buckets = await Promise.all(urls.map(safe));
+        const list = buckets.flat();
+
+        // IDye göre tekilleştir + tarihe göre sırala
+        const uniq = new Map();
+        for (const m of list) if (!uniq.has(m.id)) uniq.set(m.id, m);
+
+        const sorted = Array.from(uniq.values()).sort(
+          (a, b) => new Date(a.created) - new Date(b.created)
+        );
+
+        // History payload
+        for (const r of sorted) {
+          onMessage({
+            type: r.type,
+            from: r.from,
+            to: r.to,
+            body: r.body,
+            created:
+              typeof r.created === "number" && Number.isFinite(r.created)
+                ? r.created
+                : Number.isFinite(Date.parse(r.created))
+                ? Date.parse(r.created)
+                : Date.now(),
+            id: r.id,
+          });
+        }
+      }
+
+      // === Gönderim ===
+      function sendPrivate() {
+        const me = meEl.value.trim();
+        const admin = toEl.value.trim();
+        const body = textEl.value.trim();
+        if (!stompClient || !me || !body) return;
+
+        subscribeUserPrivate();
+        const payload = { from: me, to: admin, text: body };
+        stompClient.send("/app/chat", {}, JSON.stringify(payload));
+
+        // ekrana düşür
+        onMessage({
+          type: "PRIVATE",
+          from: me,
+          to: admin,
+          body,
+          created: Date.now(),
+        });
+        textEl.value = "";
+      }
+
+      function sendEmergency() {
+        const me = meEl.value.trim();
+        const admin = toEl.value.trim();
+        const body = eBodyEl.value.trim();
+        if (!stompClient || !me || !body) return;
+
+        // sadece user -> admin
+        const payload = { from: me, to: admin, text: body };
+        stompClient.send("/app/emergency", {}, JSON.stringify(payload));
+
+        // kendi gönderdiğini gör
+        onMessage({
+          type: "EMERGENCY",
+          from: me,
+          to: admin,
+          body,
+          created: Date.now(),
+        });
+        eBodyEl.value = "";
+      }
+
+      // === Eventler + Başlat ===
+      document.getElementById("send").onclick = sendPrivate;
+      document.getElementById("sendEmerg").onclick = sendEmergency;
+      document.getElementById("load").onclick = () =>
+        loadHistory(meEl.value.trim());
+      textEl.addEventListener("keypress", (e) => {
+        if (e.key === "Enter") sendPrivate();
+      });
+
+      connect();
+    </script>
+  </body>
+</html>
