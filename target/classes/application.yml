@@ -1,0 +1,43 @@
+map-tiles:
+  directoryPath: C:/Users/Kerim Demir/Desktop/osm_tiles
+
+spring:
+  main:
+    banner-mode: console
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3307/nms_lite
+    username: root
+    password: 111
+  #      url: jdbc:mysql://litenmsdatabase-instance-1.cb60mwoiig01.eu-central-1.rds.amazonaws.com:3306/nms_lite
+  #    username: admin
+  #    password: 'tubitak1501_#!.'
+
+  jpa:
+    hibernate.ddl-auto: none
+    generate-ddl: false
+    show-sql: false
+    open-in-view: false
+    database: mysql
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        enable_lazy_load_no_trans: true
+
+server:
+  port: 8888
+  error:
+    include-message: always
+    include-binding-errors: always
+
+spring-doc:
+  api-docs:
+    path: /api-docs
+  show-actuator: true
+  swagger-ui:
+    path: /api-docs-ui
+    supported-submit-methods: []
+
+opticoms:
+  user: admin
+  password: opticoms1234
