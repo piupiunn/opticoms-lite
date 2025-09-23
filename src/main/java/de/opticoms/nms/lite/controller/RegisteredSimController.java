@@ -147,6 +147,16 @@ public class RegisteredSimController {
         }
     }
 
+    
+@RequestMapping(value = "/v1/registeredSim/delete/{id}", method = RequestMethod.DELETE)  
+public ResponseEntity<RegisteredSim> deleteRegisteredSim(@PathVariable String id) {  
+    log.info("Calling: deleteRegisteredSim >> id: ".concat(id));  
+      
+    val deletedSim = registeredSimService.hardDelete(tryParseInteger(id, "id"));  
+      
+    return ResponseEntity.ok(mapRegisteredSim(deletedSim));  
+}
+
     private Collection<RegisteredSim> mapRegisteredSims(Collection<RegisteredSimModel> registeredSimModels) {
         return new ArrayList<>(registeredSimModels
                 .stream()
@@ -207,3 +217,4 @@ public class RegisteredSimController {
                 .build();
     }
 }
+
